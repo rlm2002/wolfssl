@@ -24,7 +24,7 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-          install: git mingw-w64-ucrt-x86_64-gcc autotools base-devel autoconf
+          install: git mingw-w64-ucrt-x86_64-gcc autotools base-devel autoconf netcat
       - name: configure wolfSSL
         run: ./autogen.sh && ./configure --enable-all --disable-crl-monitor
       - name: build wolfSSL
