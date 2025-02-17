@@ -13,22 +13,28 @@ concurrency:
 # END OF COMMON SECTION
 
 jobs:
-  msys2-ucrt64:
+  msys2:
     runs-on: windows-latest
     defaults:
       run:
         shell: msys2 {0}
+    strategy:
+      matrix:
+        include:
+          - { sys: ucrt64,  compiler: mingw-w64-ucrt-x86_64-gcc }
+          - { sys: mingw64, compiler: mingw-w64-x86_64-gcc }
+          - { sys: msys, compiler: gcc }
     steps:
       - uses: actions/checkout@v3
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MSYS
+          msystem: ${{ matrix.sys }}
           update: true
-          install: git gcc autotools base-devel autoconf netcat
+          install: git ${{matrix.compiler}} autotools base-devel autoconf netcat
       - name: configure wolfSSL
         run: ./autogen.sh && ./configure --enable-all --disable-crl-monitor CFLAGS="-DUSE_CERT_BUFFERS_2048 -DUSE_CERT_BUFFERS_256"
       - name: build wolfSSL
-        run: pwd && ls && make check
+        run: make check
       - name: Display log
         if: always()
         run: cat test-suite.log
