@@ -19,6 +19,7 @@ jobs:
       run:
         shell: msys2 {0}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { sys: ucrt64,  compiler: mingw-w64-ucrt-x86_64-gcc }
