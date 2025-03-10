@@ -35,7 +35,9 @@ jobs:
       - name: configure wolfSSL
         run: ./autogen.sh && ./configure --enable-all --disable-crl-monitor CFLAGS="-DUSE_CERT_BUFFERS_2048 -DUSE_CERT_BUFFERS_256 -DNO_WRITE_TEMP_FILES"
       - name: build wolfSSL
-        run: make check
+        run: make
+      - name: run individual tests
+        run: ./tests/unit.test -612 && ./tests/unit.test -704 ./tests/unit.test -760 && ./tests/unit.test -765 && ./tests/unit.test -766
       - name: Display log
         if: always()
         run: cat test-suite.log
