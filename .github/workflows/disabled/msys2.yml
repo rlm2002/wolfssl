@@ -37,7 +37,7 @@ jobs:
       - name: build wolfSSL
         run: make
       - name: run individual tests
-        run: ./tests/unit.test -612 && ./tests/unit.test -704 ./tests/unit.test -760 && ./tests/unit.test -765 && ./tests/unit.test -766
+        run: ./tests/unit.test -612 || ./tests/unit.test -704 || ./tests/unit.test -760 || ./tests/unit.test -765 || ./tests/unit.test -766
       - name: Display log
         if: always()
         run: cat test-suite.log
