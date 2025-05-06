@@ -35877,10 +35877,10 @@ static int test_wolfSSL_PEM_write_bio_X509(void)
     int bytes_read = wolfSSL_BIO_read(input, tmp, sizeof(tmp)-1);
     int crlf_count = 0;
     for (int i = 0; i < bytes_read - 1; i++) {
-        if (buffer[i] == 0x0D && buffer[i+1] == 0x0A) {
+        if (tmp[i] == 0x0D && tmp[i+1] == 0x0A) {
             crlf_count++;
         }
-        printf("%02x ", buffer[i]); // print array in hex
+        printf("%02x ", tmp[i]); // print array in hex
     }
     printf("\n");
     ExpectIntEQ(wolfSSL_BIO_get_len(input), 2000);
