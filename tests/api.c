@@ -32943,6 +32943,19 @@ static int test_wolfSSL_PKCS8_d2i(void)
     ExpectIntEQ(PEM_write_bio_PKCS8PrivateKey(bio, NULL, NULL, NULL, 0, NULL,
         NULL), 0);
     /* Write PKCS#8 PEM to BIO. */
+    unsigned char tmp1[2048];
+    int bytes_read = wolfSSL_BIO_read(bio, tmp1, sizeof(tmp1)-1);
+    int crlf_count = 0;
+    for (int i = 0; i < bytes_read - 1; i++) {
+        if (tmp1[i] == 0x0D && tmp1[i+1] == 0x0A) {
+            crlf_count++;
+        }
+        printf("%02x ", tmp1[i]); // print array in hex
+    }
+    printf("\n");
+    printf("CRLF sequences found: %d\n", crlf_count);
+    /* Reset BIO for subsequent operations */
+    BIO_reset(bio);
     ExpectIntEQ(PEM_write_bio_PKCS8PrivateKey(bio, pkey, NULL, NULL, 0, NULL,
         NULL), bytes);
     /* Write PKCS#8 PEM to stderr. */
@@ -35887,7 +35900,11 @@ static int test_wolfSSL_PEM_write_bio_X509(void)
 
     /* Reset BIO for subsequent operations */
     BIO_reset(input);
-    ExpectIntEQ(wolfSSL_BIO_get_len(input), 2000);
+    #if defined(USE_WINDOWS_API)
+        ExpectIntEQ(wolfSSL_BIO_get_len(input), 2032);
+    else
+        ExpectIntEQ(wolfSSL_BIO_get_len(input), 2000);
+    #endif
 
     /* read PEM into X509 struct, get notBefore / notAfter to verify against */
     ExpectNotNull(PEM_read_bio_X509(input, &x509a, NULL, NULL));
