@@ -35883,6 +35883,10 @@ static int test_wolfSSL_PEM_write_bio_X509(void)
         printf("%02x ", tmp[i]); // print array in hex
     }
     printf("\n");
+    printf("CRLF sequences found: %d\n", crlf_count);
+
+    /* Reset BIO for subsequent operations */
+    BIO_reset(input);
     ExpectIntEQ(wolfSSL_BIO_get_len(input), 2000);
 
     /* read PEM into X509 struct, get notBefore / notAfter to verify against */
