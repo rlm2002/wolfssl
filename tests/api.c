@@ -32756,6 +32756,8 @@ static int test_wolfSSL_check_domain_basic_client_ssl(WOLFSSL* ssl)
 {
     EXPECT_DECLS;
 
+    ExpectIntEQ(wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, (byte*)"example.com",
+        (word32)XSTRLEN("example.com")), WOLFSSL_SUCCESS);
     ExpectIntEQ(wolfSSL_check_domain_name(ssl, dn), WOLFSSL_SUCCESS);
 
     return EXPECT_RESULT();
