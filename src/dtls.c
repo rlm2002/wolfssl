@@ -671,7 +671,7 @@ static int SendStatelessReplyDtls13(const WOLFSSL* ssl, WolfSSL_CH* ch)
         goto dtls13_cleanup;
     if (tlsxFound) {
         WolfSSL_ConstVector sigAlgs;
-        if (tlsx.size < OPAQUE16_LEN)
+        if (tlsx.size < OPAQUE16_LEN || tlsx.size > USHRT_MAX)
             ERROR_OUT(BUFFER_ERROR, dtls13_cleanup);
         ReadVector16(tlsx.elements, &sigAlgs);
         if (sigAlgs.size != tlsx.size - OPAQUE16_LEN)
