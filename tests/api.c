@@ -584,6 +584,7 @@ static int test_fileAccess(void)
     XFREE(buff, NULL, DYNAMIC_TYPE_FILE);
     XFCLOSE(f);
 #endif
+    ghjdfd
     return EXPECT_RESULT();
 }
 static int test_wc_FreeCertList(void)
