@@ -2,6 +2,26 @@
 
 ## Behavioral Changes
 
+* **Behavioral change (TLS 1.3 client certificate selection)**: a TLS 1.3
+  client now checks that the certificates it is about to send were signed with
+  an algorithm the peer accepts, as RFC 8446 Section 4.4.2.3 requires.  The
+  list comes from `signature_algorithms_cert` when the CertificateRequest
+  carries it, and otherwise from `signature_algorithms`, which Section 4.2.3
+  says then covers certificate signatures as well.  Self-signed certificates
+  are exempt, since Section 4.2.3 does not validate the signature on a
+  certificate that begins a certification path.  When no acceptable chain is
+  available the client sends a Certificate message with no certificates, per
+  Section 4.4.2, in place of sending the chain.  The peer then decides, as
+  Section 4.4.2.4 provides, whether to continue without client authentication
+  or to abort with a `certificate_required` alert.  This does not go through
+  `WOLFSSL_NO_CLIENT_CERT_ERROR`, which continues to apply only to a client
+  with no certificate configured at all.  A peer that advertises only the
+  algorithms
+  it can verify a CertificateVerify with, omitting the certificate-only
+  `rsa_pkcs1_*` code points, will no longer receive a chain signed with
+  `sha256WithRSAEncryption`, so mutual authentication that relied on the
+  previous behaviour can stop working against such a peer.
+
 * **Behavioral change (`wolfSSL_shutdown` when no close_notify can be sent)**:
   when the connection is already closed or reset and no close_notify was ever
   sent, the shutdown exchange can never complete.  That case now returns

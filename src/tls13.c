@@ -6136,6 +6136,261 @@ static int DoTls13EncryptedExtensions(WOLFSSL* ssl, const byte* input,
 }
 
 #ifndef NO_CERTS
+#if !defined(WOLFSSL_NO_SIGALG) && !defined(NO_WOLFSSL_CLIENT)
+/* Defined with the rest of the certificate send path, further down. */
+static word32 NextCert(byte* data, word32 length, word32* idx);
+
+/* Map a certificate's signature algorithm OID onto the TLS signature scheme a
+ * peer advertises for it.
+ *
+ * Only algorithms with a TLS SignatureScheme codepoint are listed. Anything
+ * else - SHA-3 signatures, SLH-DSA, the draft Dilithium OIDs - returns
+ * ALGO_ID_E and is left alone by the caller: an unmapped OID means this list
+ * does not cover the algorithm, not that the peer rejected the certificate.
+ *
+ * RSA-PSS carries its hash in the signature algorithm parameters, which are
+ * not decoded here, so no_mac is returned for it and the caller matches on the
+ * signature algorithm alone.
+ *
+ * oidSum    Signature algorithm OID sum taken from the certificate.
+ * hashAlgo  On success, the hash algorithm of the matching scheme.
+ * sigAlgo   On success, the signature algorithm of the matching scheme.
+ * returns 0 on success and ALGO_ID_E when the OID has no TLS scheme.
+ */
+static int CertSigOidToSigAlg(word32 oidSum, byte* hashAlgo, byte* sigAlgo)
+{
+    int ret = 0;
+
+    switch (oidSum) {
+        case CTC_SHAwRSA:
+            *hashAlgo = sha_mac;
+            *sigAlgo  = rsa_sa_algo;
+            break;
+        case CTC_SHA224wRSA:
+            *hashAlgo = sha224_mac;
+            *sigAlgo  = rsa_sa_algo;
+            break;
+        case CTC_SHA256wRSA:
+            *hashAlgo = sha256_mac;
+            *sigAlgo  = rsa_sa_algo;
+            break;
+        case CTC_SHA384wRSA:
+            *hashAlgo = sha384_mac;
+            *sigAlgo  = rsa_sa_algo;
+            break;
+        case CTC_SHA512wRSA:
+            *hashAlgo = sha512_mac;
+            *sigAlgo  = rsa_sa_algo;
+            break;
+        case CTC_RSASSAPSS:
+            *hashAlgo = no_mac;
+            *sigAlgo  = rsa_pss_sa_algo;
+            break;
+        case CTC_SHAwECDSA:
+            *hashAlgo = sha_mac;
+            *sigAlgo  = ecc_dsa_sa_algo;
+            break;
+        case CTC_SHA224wECDSA:
+            *hashAlgo = sha224_mac;
+            *sigAlgo  = ecc_dsa_sa_algo;
+            break;
+        case CTC_SHA256wECDSA:
+            *hashAlgo = sha256_mac;
+            *sigAlgo  = ecc_dsa_sa_algo;
+            break;
+        case CTC_SHA384wECDSA:
+            *hashAlgo = sha384_mac;
+            *sigAlgo  = ecc_dsa_sa_algo;
+            break;
+        case CTC_SHA512wECDSA:
+            *hashAlgo = sha512_mac;
+            *sigAlgo  = ecc_dsa_sa_algo;
+            break;
+        case CTC_ED25519:
+            *hashAlgo = sha512_mac;
+            *sigAlgo  = ed25519_sa_algo;
+            break;
+        case CTC_ED448:
+            *hashAlgo = sha512_mac;
+            *sigAlgo  = ed448_sa_algo;
+            break;
+        case CTC_SM3wSM2:
+            *hashAlgo = sm3_mac;
+            *sigAlgo  = sm2_sa_algo;
+            break;
+        case CTC_FALCON_LEVEL1:
+            *hashAlgo = sha256_mac;
+            *sigAlgo  = falcon_level1_sa_algo;
+            break;
+        case CTC_FALCON_LEVEL5:
+            *hashAlgo = sha512_mac;
+            *sigAlgo  = falcon_level5_sa_algo;
+            break;
+        case CTC_ML_DSA_44:
+            *hashAlgo = sha256_mac;
+            *sigAlgo  = mldsa_44_sa_algo;
+            break;
+        case CTC_ML_DSA_65:
+            *hashAlgo = sha384_mac;
+            *sigAlgo  = mldsa_65_sa_algo;
+            break;
+        case CTC_ML_DSA_87:
+            *hashAlgo = sha512_mac;
+            *sigAlgo  = mldsa_87_sa_algo;
+            break;
+        default:
+            ret = ALGO_ID_E;
+            break;
+    }
+
+    return ret;
+}
+
+/* Check one certificate's signature algorithm against the peer's list.
+ *
+ * A certificate that will not decode here, or whose signature algorithm has no
+ * TLS scheme, is allowed through: neither is evidence the peer refused it.
+ *
+ * ssl            The SSL/TLS object.
+ * cert           DER encoded certificate.
+ * certSz         Length of the DER encoded certificate.
+ * sigAlgoList    Peer's acceptable signature algorithms, two bytes per entry.
+ * sigAlgoListSz  Length of the peer's list in bytes.
+ * returns 1 when the certificate may be sent and 0 when it may not.
+ */
+static int ClientCertAcceptable(WOLFSSL* ssl, const byte* cert, word32 certSz,
+                                const byte* sigAlgoList, word16 sigAlgoListSz)
+{
+    byte   certHash = no_mac;
+    byte   certSig = invalid_sa_algo;
+    byte   hashAlgo = no_mac;
+    byte   sigAlgo = invalid_sa_algo;
+    word16 i;
+    int    ok = 1;
+    WC_DECLARE_VAR(dCert, DecodedCert, 1, 0);
+
+    /* Without the memory to decide, leave the certificate alone. */
+    WC_ALLOC_VAR_EX(dCert, DecodedCert, 1, ssl->heap, DYNAMIC_TYPE_DCERT,
+        return 1);
+
+    InitDecodedCert(dCert, cert, certSz, ssl->heap);
+    /* Only the signature algorithm and whether the certificate is self signed
+     * are wanted, so it is not verified and no certificate manager is passed
+     * in. ParseCert also rejects a certificate whose inner and outer signature
+     * algorithms disagree, which a hand rolled read of either one would not. */
+    if (ParseCert(dCert, CERT_TYPE, NO_VERIFY, NULL) != 0) {
+        WOLFSSL_MSG("Cert not decoded here, left to the full parser");
+    }
+    else if (dCert->selfSigned) {
+        WOLFSSL_MSG("Self signed cert begins the path, any algorithm allowed");
+    }
+    else if (CertSigOidToSigAlg(dCert->signatureOID, &certHash, &certSig)
+             != 0) {
+        WOLFSSL_MSG("Cert signature algorithm has no TLS scheme, allowing");
+    }
+    else {
+        ok = 0;
+        for (i = 0; (i + 1) < sigAlgoListSz; i += HELLO_EXT_SIGALGO_SZ) {
+            DecodeSigAlg(&sigAlgoList[i], &hashAlgo, &sigAlgo);
+            if (certHash == no_mac) {
+                /* RSA-PSS keeps its hash in the signature parameters, so any
+                 * PSS scheme the peer lists counts as a match. */
+                if ((sigAlgo == rsa_pss_sa_algo) ||
+                        (sigAlgo == rsa_pss_pss_algo)) {
+                    ok = 1;
+                    break;
+                }
+                continue;
+            }
+            if (hashAlgo != certHash) {
+                continue;
+            }
+            if (sigAlgo == certSig) {
+                ok = 1;
+                break;
+            }
+            /* PickHashSigAlgo folds brainpool ECDSA into plain ECDSA; a
+             * signature over a certificate is encoded the same way. */
+            if ((sigAlgo == ecc_brainpool_sa_algo) &&
+                    (certSig == ecc_dsa_sa_algo)) {
+                ok = 1;
+                break;
+            }
+        }
+    }
+    FreeDecodedCert(dCert);
+
+    WC_FREE_VAR_EX(dCert, ssl->heap, DYNAMIC_TYPE_DCERT);
+
+    return ok;
+}
+
+/* Check the client certificate chain against the peer's acceptable
+ * certificate signature algorithms.
+ *
+ * ssl         The SSL/TLS object.
+ * peerSuites  Suites parsed from the CertificateRequest.
+ * returns 1 when the chain may be sent and 0 when it may not.
+ */
+static int ClientCertChainAcceptable(WOLFSSL* ssl, const Suites* peerSuites)
+{
+    const byte* list;
+    byte*       chain;
+    word32      chainSz;
+    word32      idx = 0;
+    word32      prev;
+    word32      len;
+    word16      listSz;
+    int         i;
+    int         ok = 1;
+
+    if (ssl->certHashSigAlgoSz > 0) {
+        list   = ssl->certHashSigAlgo;
+        listSz = ssl->certHashSigAlgoSz;
+    }
+    else {
+        list   = peerSuites->hashSigAlgo;
+        listSz = peerSuites->hashSigAlgoSz;
+    }
+    if (listSz == 0) {
+        return 1;
+    }
+
+    /* A certificate set up by a callback is not available to check here. */
+    if ((ssl->buffers.certificate == NULL) ||
+            (ssl->buffers.certificate->buffer == NULL)) {
+        return 1;
+    }
+
+    if (!ClientCertAcceptable(ssl, ssl->buffers.certificate->buffer,
+                              ssl->buffers.certificate->length, list, listSz)) {
+        return 0;
+    }
+
+    if ((ssl->buffers.certChain == NULL) ||
+            (ssl->buffers.certChain->buffer == NULL)) {
+        return 1;
+    }
+
+    chain   = ssl->buffers.certChain->buffer;
+    chainSz = ssl->buffers.certChain->length;
+    for (i = 0; i < ssl->buffers.certChainCnt; i++) {
+        prev = idx;
+        len = NextCert(chain, chainSz, &idx);
+        if (len <= (word32)CERT_HEADER_SZ) {
+            break;
+        }
+        if (!ClientCertAcceptable(ssl, chain + prev + CERT_HEADER_SZ,
+                                  len - CERT_HEADER_SZ, list, listSz)) {
+            ok = 0;
+            break;
+        }
+    }
+
+    return ok;
+}
+#endif /* !WOLFSSL_NO_SIGALG && !NO_WOLFSSL_CLIENT */
+
 /* handle processing TLS v1.3 certificate_request (13) */
 /* Handle a TLS v1.3 CertificateRequest message.
  * This message is always encrypted.
@@ -6230,6 +6485,12 @@ static int DoTls13CertificateRequest(WOLFSSL* ssl, const byte* input,
     *inOutIdx += OPAQUE16_LEN;
     if ((*inOutIdx - begin) + len > size)
         return BUFFER_ERROR;
+    /* RFC 8446 Section 4.2.3: signature_algorithms_cert applies only to the
+     * request that carried it. Drop any list left by an earlier
+     * CertificateRequest so a request without the extension falls back to
+     * signature_algorithms instead of reusing a stale list. */
+    ssl->certHashSigAlgoSz = 0;
+
     /* RFC 9846 Section 4.4.2: CertificateRequest.extensions has a lower bound of
      * 0, so an empty extensions block is parsed rather than rejected here. A
      * request missing the mandatory signature_algorithms extension is caught by
@@ -6281,6 +6542,17 @@ static int DoTls13CertificateRequest(WOLFSSL* ssl, const byte* input,
             return INVALID_PARAMETER;
         }
         ssl->options.sendVerify = SEND_CERT;
+    #if !defined(WOLFSSL_NO_SIGALG) && !defined(NO_WOLFSSL_CLIENT)
+        /* RFC 8446 Section 4.4.2.3: the certificates sent MUST be signed with
+         * a signature algorithm the peer accepts. Section 4.4.2 answers with
+         * an empty certificate_list when no suitable certificate is available,
+         * leaving it to the peer to decide whether to continue unauthenticated
+         * or abort with certificate_required. */
+        if (!ClientCertChainAcceptable(ssl, &peerSuites)) {
+            WOLFSSL_MSG("Certificate chain not signed acceptably for peer");
+            ssl->options.sendVerify = SEND_BLANK_CERT;
+        }
+    #endif
     }
     else {
 #ifndef WOLFSSL_NO_CLIENT_CERT_ERROR
