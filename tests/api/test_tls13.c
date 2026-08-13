@@ -9138,3 +9138,255 @@ int test_tls13_pha_status_request(void)
 #endif
     return EXPECT_RESULT();
 }
+
+
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && defined(WOLFSSL_TLS13) && \
+    !defined(WOLFSSL_NO_SIGALG) && !defined(NO_CERTS) && defined(HAVE_ECC) && \
+    !defined(NO_RSA) && defined(WC_RSA_PSS) && !defined(NO_SHA256) && \
+    !defined(NO_FILESYSTEM) && defined(OPENSSL_EXTRA)
+#define TEST_TLS13_CLIENT_CERT_SIGALG_ENABLED
+
+/* One client certificate signature algorithm handshake. */
+typedef struct ClientCertSigAlgCase {
+    const char* name;         /* Reported when the case fails.               */
+    const char* cliCert;      /* Client leaf, when no chain file is used.    */
+    const char* cliChain;     /* Client chain file: leaf plus chain certs.   */
+    const char* cliExtra;     /* Extra certificate appended to the chain.    */
+    const char* cliKey;       /* Client private key.                         */
+    const char* cliCa;        /* CA the server verifies the client against.  */
+    const char* srvCert;      /* Server certificate, NULL for the default.   */
+    const char* srvKey;       /* Server key, NULL for the default.           */
+    const char* srvSigAlgs;   /* Server CertificateRequest signature algos,
+                               * NULL to leave the server's own list.        */
+    const byte* certSigAlgo;  /* Seed for ssl->certHashSigAlgo, or NULL.     */
+    word16      certSigAlgoSz;
+    int         expSendVerify;/* Expected ssl->options.sendVerify.           */
+    int         expChainCnt;  /* Expected chain length, -1 to not check.     */
+} ClientCertSigAlgCase;
+
+/* ecdsa_secp256r1_sha256 only, standing in for a list an earlier
+ * CertificateRequest left behind. */
+static const byte staleCertSigAlgo[] = { 0x04, 0x03 };
+
+/* Run a TLS 1.3 mutual-auth handshake and check what the client decided to do
+ * with its certificate.  Every peer setting is driven through public API, so
+ * each case is reachable by an ordinary application; only the verdict is read
+ * out of the SSL object. */
+static int test_tls13_client_cert_sigalg_run(const ClientCertSigAlgCase* c)
+{
+    EXPECT_DECLS;
+    struct test_memio_ctx test_ctx;
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    WOLFSSL_X509* extra = NULL;
+    int addRet = 0;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectNotNull(ctx_c = wolfSSL_CTX_new(wolfTLSv1_3_client_method()));
+    ExpectIntEQ(wolfSSL_CTX_load_verify_locations(ctx_c, caCertFile, NULL),
+        WOLFSSL_SUCCESS);
+    if (c->cliChain != NULL) {
+        ExpectIntEQ(wolfSSL_CTX_use_certificate_chain_file(ctx_c, c->cliChain),
+            WOLFSSL_SUCCESS);
+    }
+    else {
+        ExpectIntEQ(wolfSSL_CTX_use_certificate_file(ctx_c, c->cliCert,
+            WOLFSSL_FILETYPE_PEM), WOLFSSL_SUCCESS);
+    }
+    ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_file(ctx_c, c->cliKey,
+        WOLFSSL_FILETYPE_PEM), WOLFSSL_SUCCESS);
+    if (c->cliExtra != NULL) {
+        ExpectNotNull(extra = wolfSSL_X509_load_certificate_file(c->cliExtra,
+            WOLFSSL_FILETYPE_PEM));
+        if (extra != NULL) {
+            /* Ownership of the X509 object passes to the context on success.
+             * wolfSSL_CTX_add1_chain_cert() is not used here: it appends to
+             * the chain buffer without incrementing certChainCnt. */
+            addRet = (int)wolfSSL_CTX_add_extra_chain_cert(ctx_c, extra);
+            if (addRet != 1) {
+                wolfSSL_X509_free(extra);
+            }
+        }
+        ExpectIntEQ(addRet, 1);
+    }
+    wolfSSL_SetIORecv(ctx_c, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_c, test_memio_write_cb);
+
+    ExpectNotNull(ctx_s = wolfSSL_CTX_new(wolfTLSv1_3_server_method()));
+    ExpectIntEQ(wolfSSL_CTX_use_certificate_file(ctx_s,
+        (c->srvCert != NULL) ? c->srvCert : svrCertFile, WOLFSSL_FILETYPE_PEM),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_use_PrivateKey_file(ctx_s,
+        (c->srvKey != NULL) ? c->srvKey : svrKeyFile, WOLFSSL_FILETYPE_PEM),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_load_verify_locations(ctx_s, c->cliCa, NULL),
+        WOLFSSL_SUCCESS);
+    wolfSSL_CTX_set_verify(ctx_s, WOLFSSL_VERIFY_PEER, NULL);
+    wolfSSL_SetIORecv(ctx_s, test_memio_read_cb);
+    wolfSSL_SetIOSend(ctx_s, test_memio_write_cb);
+
+    /* Control what the server offers in its CertificateRequest. */
+    if (c->srvSigAlgs != NULL) {
+        ExpectIntEQ(wolfSSL_CTX_set1_sigalgs_list(ctx_s, c->srvSigAlgs),
+            WOLFSSL_SUCCESS);
+    }
+
+    ExpectNotNull(ssl_c = wolfSSL_new(ctx_c));
+    wolfSSL_SetIOReadCtx(ssl_c, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_c, &test_ctx);
+    ExpectNotNull(ssl_s = wolfSSL_new(ctx_s));
+    wolfSSL_SetIOReadCtx(ssl_s, &test_ctx);
+    wolfSSL_SetIOWriteCtx(ssl_s, &test_ctx);
+
+    if ((ssl_c != NULL) && (c->certSigAlgo != NULL)) {
+        XMEMCPY(ssl_c->certHashSigAlgo, c->certSigAlgo, c->certSigAlgoSz);
+        ssl_c->certHashSigAlgoSz = c->certSigAlgoSz;
+    }
+
+    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
+    if (ssl_c != NULL) {
+        ExpectIntEQ(ssl_c->options.sendVerify, c->expSendVerify);
+        if (c->expChainCnt >= 0) {
+            ExpectIntEQ(ssl_c->buffers.certChainCnt, c->expChainCnt);
+        }
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+
+#endif /* TEST_TLS13_CLIENT_CERT_SIGALG_ENABLED */
+
+/* RFC 8446 Section 4.4.2.3: a client certificate signed with an algorithm the
+ * peer does not accept must not be sent.
+ *
+ * How the defect is reached, using public API only:
+ *   1. The server calls wolfSSL_CTX_set1_sigalgs_list() with a list that has
+ *      no rsa_pkcs1_sha256, so its CertificateRequest advertises only
+ *      ecdsa_secp256r1_sha256 and rsa_pss_rsae_sha256.
+ *   2. The client holds certs/server-ecc-rsa.pem, whose key is ECC but whose
+ *      signature is sha256WithRSAEncryption, that is rsa_pkcs1_sha256.  Key
+ *      type and signature algorithm differ, which is what separates this from
+ *      the checks wolfSSL already made.
+ *   3. DoTls13CertificateRequest calls PickHashSigAlgo, which matches on the
+ *      ECC key alone and succeeds against ecdsa_secp256r1_sha256.  Before the
+ *      fix nothing else was consulted and the certificate went out.
+ *   4. ClientCertChainAcceptable now reads the certificate's own signature
+ *      algorithm, does not find it in the peer's list, and the client answers
+ *      with an empty Certificate message instead.
+ *
+ * The remaining cases pin the behaviour that must not change with it:
+ *
+ *   accept        the same certificate once the peer does offer RSA+SHA256, so
+ *                 a version that refused everything fails here.
+ *   self signed   certs/client-cert.pem is rsa_pkcs1_sha256 signed against an
+ *                 RSA-PSS only peer.  The signature algorithm check fails and
+ *                 only the Section 4.2.3 exemption for a certificate that
+ *                 begins a certification path keeps it.
+ *   ecc server    an ECC only server leaves its list at the default, which
+ *                 InitSuites fills with every compiled-in algorithm rather
+ *                 than narrowing it to the server's key type.  An ECDSA
+ *                 certificate from an RSA CA, ordinary enterprise PKI, still
+ *                 authenticates.  This is the deployment the check most risks
+ *                 breaking.
+ *   stale list    ssl->certHashSigAlgo is seeded with an ECDSA only list that
+ *                 would refuse this certificate if still consulted.
+ *                 DoTls13CertificateRequest clears it before parsing, so
+ *                 signature_algorithms applies and the certificate is sent.
+ *                 The seeding is a stand in: no API sets that field, so only a
+ *                 third party peer can populate it and the real parse cannot
+ *                 be driven from here.  It also makes the client advertise the
+ *                 extension in its own ClientHello, since
+ *                 TLSX_PopulateExtensions adds it whenever the size is
+ *                 non-zero.
+ */
+int test_tls13_client_cert_sigalg(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_TLS13_CLIENT_CERT_SIGALG_ENABLED
+    static const ClientCertSigAlgCase cases[] = {
+        { "reject: cert signature algorithm not offered",
+          "certs/server-ecc-rsa.pem", NULL, NULL, "certs/ecc-key.pem",
+          caCertFile, NULL, NULL, "ECDSA+SHA256:RSA-PSS+SHA256", NULL, 0,
+          SEND_BLANK_CERT, -1 },
+        { "accept: cert signature algorithm offered",
+          "certs/server-ecc-rsa.pem", NULL, NULL, "certs/ecc-key.pem",
+          caCertFile, NULL, NULL, "ECDSA+SHA256:RSA-PSS+SHA256:RSA+SHA256",
+          NULL, 0, SEND_CERT, -1 },
+        { "self signed cert is exempt",
+          cliCertFile, NULL, NULL, cliKeyFile, cliCertFile, NULL, NULL,
+          "RSA-PSS+SHA256", NULL, 0, SEND_CERT, -1 },
+        { "ecc only server still accepts an RSA CA signed client cert",
+          "certs/server-ecc-rsa.pem", NULL, NULL, "certs/ecc-key.pem",
+          caCertFile, "certs/server-ecc.pem", "certs/ecc-key.pem", NULL,
+          NULL, 0, SEND_CERT, -1 },
+        { "stale signature_algorithms_cert does not decide this request",
+          "certs/server-ecc-rsa.pem", NULL, NULL, "certs/ecc-key.pem",
+          caCertFile, NULL, NULL, "ECDSA+SHA256:RSA-PSS+SHA256:RSA+SHA256",
+          staleCertSigAlgo, (word16)sizeof(staleCertSigAlgo), SEND_CERT, -1 },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(*cases) && !EXPECT_FAIL(); i++) {
+        int _r = test_tls13_client_cert_sigalg_run(&cases[i]);
+        if (_r != TEST_SUCCESS) {
+            fprintf(stderr, "FAIL %s\n", cases[i].name);
+        }
+        ExpectIntEQ(_r, TEST_SUCCESS);
+    }
+#endif
+    return EXPECT_RESULT();
+}
+
+/* Every certificate sent is checked, not just the leaf.
+ *
+ * wolfSSL_CTX_use_certificate_chain_file() puts the leaf in
+ * ssl->buffers.certificate and the intermediates in ssl->buffers.certChain, so
+ * ClientCertChainAcceptable runs its NextCert walk rather than returning at the
+ * no chain guard the single certificate cases take.  expChainCnt records that
+ * the loop really had entries to visit.
+ *
+ * The accept case has leaf and both intermediates signed rsa_pkcs1_sha256,
+ * which the peer offers, so the walk runs to completion.  The reject case
+ * appends certs/intermediate/ca-int-ecc-cert.pem, signed
+ * ecdsa_secp256r1_sha256 and not self signed, while the peer's list carries no
+ * ECDSA.  Leaf and intermediates still pass, so the refusal comes from inside
+ * the walk rather than at the leaf.  That is what makes this sensitive to the
+ * pointer arithmetic: perturbing chain + prev + CERT_HEADER_SZ makes the parse
+ * fail, the fail open branch allows the certificate, and this is the only case
+ * that notices. */
+int test_tls13_client_cert_sigalg_chain(void)
+{
+    EXPECT_DECLS;
+#ifdef TEST_TLS13_CLIENT_CERT_SIGALG_ENABLED
+    static const ClientCertSigAlgCase cases[] = {
+        { "chain accept: every certificate acceptable",
+          NULL, "certs/intermediate/client-chain.pem", NULL,
+          "certs/client-key.pem", caCertFile, NULL, NULL,
+          "RSA+SHA256:RSA-PSS+SHA256", NULL, 0, SEND_CERT, 2 },
+        { "chain reject: a chain certificate is not acceptable",
+          NULL, "certs/intermediate/client-chain.pem",
+          "certs/intermediate/ca-int-ecc-cert.pem", "certs/client-key.pem",
+          caCertFile, NULL, NULL, "RSA+SHA256:RSA-PSS+SHA256", NULL, 0,
+          SEND_BLANK_CERT, 3 },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(*cases) && !EXPECT_FAIL(); i++) {
+        int _r = test_tls13_client_cert_sigalg_run(&cases[i]);
+        if (_r != TEST_SUCCESS) {
+            fprintf(stderr, "FAIL %s\n", cases[i].name);
+        }
+        ExpectIntEQ(_r, TEST_SUCCESS);
+    }
+#endif
+    return EXPECT_RESULT();
+}
+
