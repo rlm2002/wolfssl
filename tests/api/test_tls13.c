@@ -10025,3 +10025,60 @@ int test_tls13_pha_status_request(void)
 #endif
     return EXPECT_RESULT();
 }
+
+/* A signature_algorithms_cert list belongs to the peer that sent it. Reusing
+ * the object must not turn that list into this end's own advertisement. */
+int test_tls13_sigalgs_cert_not_echoed(void)
+{
+    EXPECT_DECLS;
+#if defined(WOLFSSL_TLS13) && !defined(NO_CERTS) && \
+    !defined(WOLFSSL_NO_SIGALG) && !defined(NO_WOLFSSL_CLIENT) && \
+    !defined(NO_TLS) && defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES)
+    struct test_memio_ctx test_ctx;
+    WOLFSSL_CTX* ctx_c = NULL;
+    WOLFSSL_CTX* ctx_s = NULL;
+    WOLFSSL* ssl_c = NULL;
+    WOLFSSL* ssl_s = NULL;
+    Suites peerSuites;
+    int ret = 0;
+    /* signature_algorithms_cert (50) carrying rsa_pkcs1_sha256 alone. */
+    const byte extBytes[] = { 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x04, 0x01 };
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+    XMEMSET(&peerSuites, 0, sizeof(peerSuites));
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfTLSv1_3_client_method, wolfTLSv1_3_server_method), 0);
+
+    /* No server is pumped here, so each connect stops at WANT_READ once its
+     * ClientHello is out. */
+    ret = wolfSSL_connect(ssl_c);
+    ExpectIntNE(ret, WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, ret), WOLFSSL_ERROR_WANT_READ);
+
+    /* Stand in for a CertificateRequest that carried the extension. */
+    ExpectIntEQ(TLSX_Parse(ssl_c, extBytes, (word16)sizeof(extBytes),
+        certificate_request, &peerSuites), 0);
+    if (ssl_c != NULL) {
+        ExpectIntGT(ssl_c->certHashSigAlgoSz, 0);
+    }
+
+    /* Reuse the object, which is where the peer's list used to carry over. */
+    ExpectIntEQ(wolfSSL_clear(ssl_c), WOLFSSL_SUCCESS);
+    ret = wolfSSL_connect(ssl_c);
+    ExpectIntNE(ret, WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_get_error(ssl_c, ret), WOLFSSL_ERROR_WANT_READ);
+    if (ssl_c != NULL) {
+        /* signature_algorithms is always offered, so finding it proves the
+         * second ClientHello really was built. */
+        ExpectNotNull(TLSX_Find(ssl_c->extensions, TLSX_SIGNATURE_ALGORITHMS));
+        ExpectNull(TLSX_Find(ssl_c->extensions,
+            TLSX_SIGNATURE_ALGORITHMS_CERT));
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+#endif
+    return EXPECT_RESULT();
+}
