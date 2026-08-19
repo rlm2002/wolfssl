@@ -5730,6 +5730,13 @@ size_t wolfSSL_get_client_random(const WOLFSSL* ssl, unsigned char* out,
         ssl->options.rpkState.received_ClientCertTypeCnt = 0;
         ssl->options.rpkState.received_ServerCertTypeCnt = 0;
     #endif
+    #ifdef WOLFSSL_TLS13
+        /* Drop the peer's signature_algorithms_cert list so one peer's policy
+         * cannot carry into the next handshake and be offered as our own.
+         * Zeroing the size is enough here: the extension is only built while
+         * the size is non-zero, and the list built from it is freed below. */
+        ssl->certHashSigAlgoSz = 0;
+    #endif
 
     #if defined(HAVE_TLS_EXTENSIONS) && !defined(NO_TLS)
         TLSX_FreeAll(ssl->extensions, ssl->heap);

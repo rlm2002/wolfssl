@@ -172,6 +172,14 @@
 
 ## Fixes
 
+* **Fix (`signature_algorithms_cert` from a peer echoed as our own)**:
+  `ssl->certHashSigAlgo` both stored the list a peer sent and fed the
+  `signature_algorithms_cert` extension this end advertises.  A TLS 1.3 client
+  that received the extension and was then reused with `wolfSSL_clear()` sent
+  the peer's list back out in its next ClientHello, describing a certificate
+  policy it never held.  `wolfSSL_clear()` now drops the stored list alongside
+  the other peer-derived state it resets.
+
 * **Fix (certificate manager left pointing at a released store)**:
   `wolfSSL_CTX_set_cert_store()` pairs the store handed to it with the
   context's certificate manager, which keeps a pointer back to that store.
