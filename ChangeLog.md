@@ -137,6 +137,13 @@
 
 * ML-KEM and ML-DSA now keep the key's device id on their internal SHAKE hashing, so a registered crypto callback sees the SHAKE-256 Update and Final calls. by @Frauschi (PR 11544)
 * SHA-3 crypto callbacks are now told the variant of each call instead of one cached on the context, which gave the wrong digest length when ML-KEM reused one object for SHA3-512 and SHA3-256. by @Frauschi (PR 11544)
+* **Fix (`signature_algorithms_cert` from a peer echoed as our own)**:
+  `ssl->certHashSigAlgo` both stored the list a peer sent and fed the
+  `signature_algorithms_cert` extension this end advertises.  A TLS 1.3 client
+  that received the extension and was then reused with `wolfSSL_clear()` sent
+  the peer's list back out in its next ClientHello, describing a certificate
+  policy it never held.  `wolfSSL_clear()` now drops the stored list alongside
+  the other peer-derived state it resets.
 
 # wolfSSL Release 5.9.4 (Sep 25, 2026)
 
