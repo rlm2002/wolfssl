@@ -12760,6 +12760,32 @@ WOLFSSL_TEST_SUBROUTINE wc_test_ret_t hmac_sha256_test(void)
 
         wc_HmacFree(&hmac);
 
+#if !defined(HAVE_FIPS) && !defined(HAVE_SELFTEST)
+        {
+            word32 hashSz = sizeof(hash);
+
+            XMEMSET(hash, 0, sizeof(hash));
+            ret = wc_HmacGenerate_ex(&hmac, WC_SHA256, hash, &hashSz,
+                (const byte*)test_hmac[i].input, (word32)test_hmac[i].inLen,
+                (const byte*)keys[i], (word32)XSTRLEN(keys[i]), HEAP_HINT,
+                devId);
+            if (ret != 0)
+                ERROR_OUT(WC_TEST_RET_ENC_I(i), out);
+            if (hashSz != WC_SHA256_DIGEST_SIZE ||
+                    XMEMCMP(hash, test_hmac[i].output,
+                            WC_SHA256_DIGEST_SIZE) != 0)
+                ERROR_OUT(WC_TEST_RET_ENC_I(i), out);
+
+            ret = wc_HmacVerify_ex(&hmac, WC_SHA256,
+                (const byte*)test_hmac[i].output, WC_SHA256_DIGEST_SIZE,
+                (const byte*)test_hmac[i].input, (word32)test_hmac[i].inLen,
+                (const byte*)keys[i], (word32)XSTRLEN(keys[i]), HEAP_HINT,
+                devId);
+            if (ret != 0)
+                ERROR_OUT(WC_TEST_RET_ENC_I(i), out);
+        }
+#endif
+
 #if !defined(HAVE_SELFTEST) && (!defined(HAVE_FIPS) || FIPS_VERSION3_GT(7,0,0))
         if (test_hmac[i].input != NULL) {
             ret = wc_HmacUpdate(hmac_copy, (byte*)test_hmac[i].input,
@@ -101224,6 +101250,9 @@ typedef struct {
     int chachaPolyEncCount; /* ChaCha20-Poly1305 encrypt cb invocations */
     int chachaPolyDecCount; /* ChaCha20-Poly1305 decrypt cb invocations */
 #endif
+#if !defined(NO_HMAC) && !defined(HAVE_FIPS) && !defined(HAVE_SELFTEST)
+    int hmacOneShotCount; /* one-shot HMAC callback invocations */
+#endif
 #if (defined(HAVE_PBKDF2) && !defined(NO_HMAC) && !defined(NO_PWDBASED))
     int pbkdf2Count;      /* PBKDF2 callback invocations */
     int pbkdf2Decline;    /* when set, decline so software fallback runs */
@@ -105901,6 +105930,12 @@ static int myCryptoDevCb(int devIdArg, wc_CryptoInfo* info, void* ctx)
                 info->hmac.hmac,
                 info->hmac.in,
                 info->hmac.inSz);
+            if (ret == 0 && info->hmac.digest != NULL) {
+                myCtx->hmacOneShotCount++;
+                ret = wc_HmacFinal(
+                    info->hmac.hmac,
+                    info->hmac.digest);
+            }
         }
         else if (info->hmac.digest != NULL) {
             ret = wc_HmacFinal(
@@ -108006,6 +108041,9 @@ WOLFSSL_TEST_SUBROUTINE wc_test_ret_t cryptocb_test(void)
     myCtx.chachaPolyEncCount = 0;
     myCtx.chachaPolyDecCount = 0;
 #endif
+#if !defined(NO_HMAC) && !defined(HAVE_FIPS) && !defined(HAVE_SELFTEST)
+    myCtx.hmacOneShotCount = 0;
+#endif
 #if (defined(HAVE_PBKDF2) && !defined(NO_HMAC) && !defined(NO_PWDBASED))
     myCtx.pbkdf2Count = 0;
     myCtx.pbkdf2Decline = 0;
@@ -109436,6 +109474,10 @@ WOLFSSL_TEST_SUBROUTINE wc_test_ret_t cryptocb_test(void)
     #ifndef NO_SHA256
     if (ret == 0)
         ret = hmac_sha256_test();
+        #if !defined(HAVE_FIPS) && !defined(HAVE_SELFTEST)
+    if (ret == 0 && myCtx.hmacOneShotCount == 0)
+        ret = WC_TEST_RET_ENC_NC;
+        #endif
     #endif
     #ifdef WOLFSSL_SHA3
     if (ret == 0)
